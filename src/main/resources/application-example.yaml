@@ -2,14 +2,12 @@ spring:
   application:
     name: barbershopapi
 
-  # ── Base de datos ────────────────────────────────────────────
   datasource:
-    url: ${DB_URL}
-    username: ${DB_USERNAME}
-    password: ${DB_PASSWORD}
+    url: ${SPRING_DATASOURCE_URL}
+    username: ${SPRING_DATASOURCE_USERNAME}
+    password: ${SPRING_DATASOURCE_PASSWORD}
     driver-class-name: org.postgresql.Driver
 
-  # ── JPA / Hibernate ──────────────────────────────────────────
   jpa:
     hibernate:
       ddl-auto: validate
@@ -19,32 +17,27 @@ spring:
         dialect: org.hibernate.dialect.PostgreSQLDialect
         format_sql: true
 
-  # ── Flyway ───────────────────────────────────────────────────
   flyway:
     enabled: false
 
-# ── JWT ─────────────────────────────────────────────────────────
 app:
   jwt:
-    secret: ${JWT_SECRET}
+    secret: ${APP_JWT_SECRET}
     expiration-ms: 86400000
 
   frontend-url: ${FRONTEND_URL}
 
-  # ── Cloudinary ───────────────────────────────────────────────
   cloudinary:
     cloud-name: ${CLOUDINARY_CLOUD_NAME}
     api-key: ${CLOUDINARY_API_KEY}
     api-secret: ${CLOUDINARY_API_SECRET}
 
-# ── Swagger UI ──────────────────────────────────────────────────
 springdoc:
   swagger-ui:
     path: /swagger-ui/index.html
   api-docs:
     path: /v3/api-docs
 
-# ── Logging ─────────────────────────────────────────────────────
 logging:
   level:
     com.bruno: DEBUG
