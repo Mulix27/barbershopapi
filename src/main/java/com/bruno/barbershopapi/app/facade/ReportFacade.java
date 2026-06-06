@@ -85,18 +85,35 @@ public class ReportFacade {
 
     public ApiResponse<PdfReportResponse> generatePdf(PdfReportRequest req) {
         try {
-            LocalDate to = LocalDate.now();
+            LocalDate today = LocalDate.now();
+            LocalDate from;
+            LocalDate to;
 
-            LocalDate from = switch (req.period()) {
-                case "today" -> to;
-                case "week" -> to.with(java.time.DayOfWeek.MONDAY);
-                case "month" -> to.withDayOfMonth(1);
-                case "custom" -> LocalDate.parse(req.from());
-                default -> to.withDayOfMonth(1);
-            };
+            switch (req.period()) {
+                case "today" -> {
+                    from = today;
+                    to = today;
+                }
 
-            if ("custom".equals(req.period()) && req.to() != null) {
-                to = LocalDate.parse(req.to());
+                case "week" -> {
+                    from = today.with(java.time.DayOfWeek.MONDAY);
+                    to = today.with(java.time.DayOfWeek.SUNDAY);
+                }
+
+                case "month" -> {
+                    from = today.withDayOfMonth(1);
+                    to = today.withDayOfMonth(today.lengthOfMonth());
+                }
+
+                case "custom" -> {
+                    from = LocalDate.parse(req.from());
+                    to = req.to() != null ? LocalDate.parse(req.to()) : from;
+                }
+
+                default -> {
+                    from = today.withDayOfMonth(1);
+                    to = today.withDayOfMonth(today.lengthOfMonth());
+                }
             }
 
             validateRange(from, to);
@@ -111,12 +128,15 @@ public class ReportFacade {
 
             FullReportResponse report = reportService.getFullReport(from, to);
 
-            String shopName = barbershopRepository
+            var barbershop = barbershopRepository
                     .findById(TenantContext.get())
-                    .map(b -> b.getName())
-                    .orElse("Barbería");
+                    .orElseThrow(() -> new RuntimeException("Barbería no encontrada"));
 
-            String base64 = reportPdfService.generateBase64(report, shopName);
+            String shopName = barbershop.getName();
+
+            boolean singleBarber = Boolean.TRUE.equals(barbershop.getSingleBarber());
+
+            String base64 = reportPdfService.generateBase64(report, shopName, singleBarber);
 
             String fileName = "Reporte_" +
                     periodLabel.replace(" ", "_").replace("—", "-") + "_" +

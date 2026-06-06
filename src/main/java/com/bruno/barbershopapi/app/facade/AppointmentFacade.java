@@ -24,9 +24,15 @@ public class AppointmentFacade {
 
     private final AppointmentService appointmentService;
 
-    public ApiResponse<DayAvailabilityResponse> getAvailability(UUID barbershopId, LocalDate date) {
+    public ApiResponse<DayAvailabilityResponse> getAvailability(
+            UUID barbershopId,
+            LocalDate date,
+            Integer durationMin
+    ) {
         try {
-            return ApiResponse.ok(appointmentService.getAvailability(barbershopId, date));
+            return ApiResponse.ok(
+                    appointmentService.getAvailability(barbershopId, date, durationMin)
+            );
         } catch (RuntimeException e) {
             return ApiResponse.error(e.getMessage());
         }

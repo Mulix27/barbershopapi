@@ -26,7 +26,7 @@ public class ClientService {
     public ClientResponse create(ClientRequest req) {
         UUID shopId = TenantContext.get();
 
-        if (clientRepository.existsByBarbershopIdAndPhone(shopId, req.phone())) {
+        if (clientRepository.existsByBarbershopIdAndPhoneAndIsActiveTrue(shopId, req.phone())) {
             throw new RuntimeException("Ya existe un cliente con el teléfono " + req.phone());
         }
 
@@ -53,7 +53,7 @@ public class ClientService {
 
         // Si cambió el teléfono, validar que no esté en uso
         if (!client.getPhone().equals(req.phone()) &&
-                clientRepository.existsByBarbershopIdAndPhone(TenantContext.get(), req.phone())) {
+                clientRepository.existsByBarbershopIdAndPhoneAndIsActiveTrue(TenantContext.get(), req.phone())) {
             throw new RuntimeException("El teléfono " + req.phone() + " ya está en uso");
         }
 

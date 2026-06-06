@@ -27,11 +27,12 @@ public class JwtUtil {
     /**
      * Genera un token JWT con el email, rol y barbershopId del usuario.
      */
-    public String generateToken(String email, String role, UUID barbershopId) {
+    public String generateToken(String email, String role, UUID barbershopId, UUID userId) {
         return Jwts.builder()
                 .subject(email)
                 .claim("role", role)
                 .claim("barbershopId", barbershopId.toString())
+                .claim("userId", userId.toString())           // ← AGREGAR
                 .issuedAt(new Date())
                 .expiration(new Date(System.currentTimeMillis() + expirationMs))
                 .signWith(getKey())
@@ -57,6 +58,11 @@ public class JwtUtil {
     public UUID extractBarbershopId(String token) {
         String id = extractAllClaims(token).get("barbershopId", String.class);
         return UUID.fromString(id);
+    }
+
+    public UUID extractUserId(String token) {
+        String id = extractAllClaims(token).get("userId", String.class);
+        return id != null ? UUID.fromString(id) : null;
     }
 
     public boolean isTokenValid(String token) {

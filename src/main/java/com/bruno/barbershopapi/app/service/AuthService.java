@@ -27,11 +27,7 @@ public class AuthService {
     @Transactional(readOnly = true)
     public LoginResponse login(LoginRequest request) {
         User user = userRepository
-                .findAll()
-                .stream()
-                .filter(u -> u.getEmail().equalsIgnoreCase(request.email()))
-                .filter(User::getIsActive)
-                .findFirst()
+                .findByEmailIgnoreCaseAndIsActiveTrue(request.email())
                 .orElseThrow(() -> new RuntimeException("Credenciales inválidas"));
 
         if (!passwordEncoder.matches(request.password(), user.getPasswordHash())) {
@@ -48,7 +44,8 @@ public class AuthService {
         String token = jwtUtil.generateToken(
                 user.getEmail(),
                 user.getRole(),
-                shop.getId()
+                shop.getId(),
+                user.getId()
         );
 
         return new LoginResponse(
@@ -111,7 +108,8 @@ public class AuthService {
         String token = jwtUtil.generateToken(
                 owner.getEmail(),
                 owner.getRole(),  // ✅ enum → String
-                shop.getId()
+                shop.getId(),
+                owner.getId()
         );
 
         return new LoginResponse(
