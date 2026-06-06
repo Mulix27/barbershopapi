@@ -57,7 +57,41 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                         .requestMatchers(PUBLIC_URLS).permitAll()
-                        .anyRequest().authenticated())
+
+                        // Staff: solo owner
+                        .requestMatchers("/api/barbershop/staff/**")
+                        .hasAuthority("owner")
+
+                        // Reportes: owner y secretary
+                        .requestMatchers("/api/reports/**")
+                        .hasAnyAuthority("owner", "secretary")
+
+                        // Ventas: owner, secretary, cashier
+                        .requestMatchers("/api/sales/**")
+                        .hasAnyAuthority("owner", "secretary", "cashier")
+
+                        // Catálogo: lectura todos, escritura solo owner
+                        .requestMatchers(HttpMethod.GET,    "/api/catalog/**").authenticated()
+                        .requestMatchers(HttpMethod.POST,   "/api/catalog/**").hasAuthority("owner")
+                        .requestMatchers(HttpMethod.PUT,    "/api/catalog/**").hasAuthority("owner")
+                        .requestMatchers(HttpMethod.DELETE, "/api/catalog/**").hasAuthority("owner")
+
+                        // Configuración barbería: solo owner puede modificar
+                        .requestMatchers(HttpMethod.GET,    "/api/barbershop/**").authenticated()
+                        .requestMatchers(HttpMethod.PUT,    "/api/barbershop/**").hasAuthority("owner")
+                        .requestMatchers(HttpMethod.PATCH,  "/api/barbershop/**").hasAuthority("owner")
+                        .requestMatchers(HttpMethod.DELETE, "/api/barbershop/**").hasAuthority("owner")
+
+                        // Agenda y barberos: todos los roles (el service filtra internamente)
+                        .requestMatchers("/api/appointments/**").authenticated()
+                        .requestMatchers("/api/barbers/**").authenticated()
+
+                        // Clientes: owner, secretary, cashier (barber no necesita)
+                        .requestMatchers("/api/clients/**")
+                        .hasAnyAuthority("owner", "secretary", "cashier")
+
+                        .anyRequest().authenticated()
+                )
                 .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class);
 
         return http.build();

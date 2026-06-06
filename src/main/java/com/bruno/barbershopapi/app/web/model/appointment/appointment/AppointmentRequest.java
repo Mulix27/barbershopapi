@@ -37,5 +37,8 @@ public record AppointmentRequest(
         LocalTime startTime,
 
         @Schema(allowableValues = {"web", "whatsapp", "dashboard"})
-        String source
+        String source,
+
+        @Schema(description = "ID del barbero asignado. Si es null el sistema asigna uno disponible automáticamente.")
+        UUID assignedToId   // ← NUEVO — opcional
 ) {}

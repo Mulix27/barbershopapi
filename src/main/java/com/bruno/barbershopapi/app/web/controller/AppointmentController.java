@@ -41,14 +41,18 @@ public class AppointmentController {
             description = "Retorna todos los slots del día indicando cuáles están disponibles. " +
                     "Usado por la página pública de la barbería para mostrar el calendario."
     )
+
     @GetMapping("/api/public/barbershops/{barbershopId}/availability")
     public ResponseEntity<ApiResponse<DayAvailabilityResponse>> getAvailability(
             @PathVariable UUID barbershopId,
-            @Parameter(description = "Fecha a consultar (YYYY-MM-DD)", example = "2025-06-15")
-            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
+            @Parameter(description = "Fecha a consultar (YYYY-MM-DD)", example = "2026-06-05")
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date,
+            @Parameter(description = "Duración del servicio en minutos", example = "60")
+            @RequestParam(required = false, defaultValue = "30") Integer durationMin) {
 
         ApiResponse<DayAvailabilityResponse> res =
-                appointmentFacade.getAvailability(barbershopId, date);
+                appointmentFacade.getAvailability(barbershopId, date, durationMin);
+
         return ResponseEntity.status(res.success() ? 200 : 400).body(res);
     }
 

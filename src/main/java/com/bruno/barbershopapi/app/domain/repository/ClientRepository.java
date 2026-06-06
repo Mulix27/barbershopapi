@@ -22,5 +22,5 @@ public interface ClientRepository extends JpaRepository<Client, UUID> {
     // Listar todos los activos
     List<Client> findAllByBarbershopIdAndIsActiveTrueOrderByFullNameAsc(UUID barbershopId);
 
-    boolean existsByBarbershopIdAndPhone(UUID barbershopId, String phone);
+    boolean existsByBarbershopIdAndPhoneAndIsActiveTrue(UUID barbershopId, String phone);
 }

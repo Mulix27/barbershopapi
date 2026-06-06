@@ -14,6 +14,11 @@ import java.util.UUID;
 @Table(name = "users")
 public class User extends BaseEntity {
 
+    public static final String ROLE_OWNER     = "owner";
+    public static final String ROLE_BARBER    = "barber";
+    public static final String ROLE_CASHIER   = "cashier";
+    public static final String ROLE_SECRETARY = "secretary";
+
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
     private UUID id;
@@ -39,5 +44,18 @@ public class User extends BaseEntity {
 
     @Column(name = "last_login")
     private OffsetDateTime lastLogin;
+
+    public boolean isOwner()     { return ROLE_OWNER.equals(this.role); }
+    public boolean isBarber()    { return ROLE_BARBER.equals(this.role); }
+    public boolean isCashier()   { return ROLE_CASHIER.equals(this.role); }
+    public boolean isSecretary() { return ROLE_SECRETARY.equals(this.role); }
+
+    public boolean canManageAppointments() {
+        return isOwner() || isSecretary();
+    }
+
+    public boolean canViewAllAppointments() {
+        return isOwner() || isSecretary() || isCashier();
+    }
 
 }

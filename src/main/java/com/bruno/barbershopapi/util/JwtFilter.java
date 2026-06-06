@@ -44,28 +44,25 @@ public class JwtFilter extends OncePerRequestFilter {
 
             if (authHeader != null && authHeader.startsWith("Bearer ")) {
                 String token = authHeader.substring(7);
-                System.out.println("JWT FILTER PATH: " + path);
-                System.out.println("AUTH HEADER: " + authHeader);
-                System.out.println("TOKEN VALID: " + jwtUtil.isTokenValid(token));
 
                 if (jwtUtil.isTokenValid(token)) {
                     String email       = jwtUtil.extractEmail(token);
                     String role        = jwtUtil.extractRole(token);
                     UUID barbershopId  = jwtUtil.extractBarbershopId(token);
+                    UUID userId       = jwtUtil.extractUserId(token);
 
                     // Cargar el barbershopId en TenantContext para filtrar datos en servicios
                     TenantContext.set(barbershopId);
 
+                    if (userId != null) UserContext.setUserId(userId);
+                    if (role   != null) UserContext.setRole(role);
+
                     var auth = new UsernamePasswordAuthenticationToken(
                             email,
                             null,
-                            List.of(new SimpleGrantedAuthority("ROLE_" + role.toUpperCase()))
+                            List.of(new SimpleGrantedAuthority(role))
                     );
                     SecurityContextHolder.getContext().setAuthentication(auth);
-                    System.out.println("AUTH OK: " + email);
-                    System.out.println("ROLE: ROLE_" + role.toUpperCase());
-                    System.out.println("SHOP ID: " + barbershopId);
-                    System.out.println("IS AUTHENTICATED: " + SecurityContextHolder.getContext().getAuthentication().isAuthenticated());
                 }
             }
 
@@ -75,6 +72,7 @@ public class JwtFilter extends OncePerRequestFilter {
             // CRÍTICO: limpiar el ThreadLocal al terminar el request
             // para evitar que el barbershopId se filtre a otro request
             TenantContext.clear();
+            UserContext.clear();
         }
     }
 }

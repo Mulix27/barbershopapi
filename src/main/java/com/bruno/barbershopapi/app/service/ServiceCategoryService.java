@@ -103,6 +103,56 @@ public class ServiceCategoryService {
         return options;
     }
 
+    @Transactional(readOnly = true)
+    public List<ServiceSelectOption> getPublicSelectOptions(UUID barbershopId) {
+        List<ServiceCategory> categories =
+                categoryRepo.findAllActiveByShop(barbershopId);
+
+        List<ServiceSelectOption> options = new ArrayList<>();
+
+        for (ServiceCategory category : categories) {
+
+            if ("fixed".equals(category.getPricingMode())) {
+                options.add(
+                        new ServiceSelectOption(
+                                category.getId(),
+                                category.getName(),
+                                category.getIcon(),
+                                "fixed",
+                                null,
+                                null,
+                                category.getBasePrice(),
+                                category.getBaseDuration(),
+                                category.getName()
+                        )
+                );
+
+                continue;
+            }
+
+            category.getVariants()
+                    .stream()
+                    .filter(ServiceVariant::isActive)
+                    .forEach(variant -> {
+                        options.add(
+                                new ServiceSelectOption(
+                                        category.getId(),
+                                        category.getName(),
+                                        category.getIcon(),
+                                        "variants",
+                                        variant.getId(),
+                                        variant.getName(),
+                                        variant.getPrice(),
+                                        variant.getDurationMin(),
+                                        category.getName() + " — " + variant.getName()
+                                )
+                        );
+                    });
+        }
+
+        return options;
+    }
+
     // ─────────────────────────────────────────
     // CREAR
     // ─────────────────────────────────────────

@@ -18,6 +18,8 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalTime;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.time.format.TextStyle;
 import java.util.*;
 
@@ -25,92 +27,160 @@ import java.util.*;
 @RequiredArgsConstructor
 public class AppointmentService {
 
-    private final AppointmentRepository       appointmentRepository;
-    private final BarberScheduleRepository    scheduleRepository;
+    private final AppointmentRepository appointmentRepository;
+    private final BarberScheduleRepository scheduleRepository;
     private final BarberBlockedTimeRepository blockedTimeRepository;
-    private final BarbershopRepository        barbershopRepository;
-    private final UserRepository              userRepository;
-    private final ClientRepository            clientRepository;
-    private final HaircutCatalogRepository    catalogRepository;
-    private final SaleRepository              saleRepository;
+    private final BarbershopRepository barbershopRepository;
+    private final UserRepository userRepository;
+    private final ClientRepository clientRepository;
+    private final HaircutCatalogRepository catalogRepository;
+    private final SaleRepository saleRepository;
+
+    private static final ZoneId BARBERSHOP_ZONE = ZoneId.of("America/Merida");
 
     // ══════════════════════════════════════════════════════════
     //  DISPONIBILIDAD
     // ══════════════════════════════════════════════════════════
 
     @Transactional(readOnly = true)
-    public DayAvailabilityResponse getAvailability(UUID barbershopId, LocalDate date) {
+    public DayAvailabilityResponse getAvailability(
+            UUID barbershopId,
+            LocalDate date,
+            Integer durationMin
+    ) {
         barbershopRepository.findById(barbershopId)
                 .orElseThrow(() -> new RuntimeException("Barbería no encontrada"));
 
         short dayOfWeek = (short) date.getDayOfWeek().getValue();
-        String dayName  = date.getDayOfWeek()
+
+        String dayName = date.getDayOfWeek()
                 .getDisplayName(TextStyle.FULL, new Locale("es", "MX"));
 
         List<BarberSchedule> schedules = scheduleRepository
                 .findAllByBarbershopIdAndDayOfWeekAndIsActiveTrue(barbershopId, dayOfWeek);
 
-        if (schedules.isEmpty())
+        if (schedules.isEmpty()) {
             return new DayAvailabilityResponse(date, dayName, false, List.of());
+        }
 
         List<Appointment> booked = appointmentRepository
                 .findActiveByBarbershopAndDate(barbershopId, date);
+
         List<BarberBlockedTime> blocks = blockedTimeRepository
                 .findByBarbershopAndDate(barbershopId, date);
 
-        return new DayAvailabilityResponse(
-                date, dayName, true,
-                calculateSlots(schedules, booked, blocks));
+        List<TimeSlotResponse> slots = calculateSlots(
+                date,
+                durationMin,
+                schedules,
+                booked,
+                blocks
+        );
+
+        return new DayAvailabilityResponse(date, dayName, true, slots);
     }
 
     private List<TimeSlotResponse> calculateSlots(
+            LocalDate date,
+            Integer durationMin,
             List<BarberSchedule> schedules,
             List<Appointment> booked,
-            List<BarberBlockedTime> blocks) {
-
+            List<BarberBlockedTime> blocks
+    ) {
         List<TimeSlotResponse> result = new ArrayList<>();
-        BarberSchedule main = schedules.get(0);
-        int slotMin = main.getSlotDuration();
-        LocalTime cur = main.getStartTime();
-        LocalTime end = main.getEndTime();
 
-        while (cur.plusMinutes(slotMin).compareTo(end) <= 0) {
-            LocalTime slotEnd = cur.plusMinutes(slotMin);
-            boolean available = isSlotAvailable(cur, slotEnd, schedules, booked, blocks);
-            result.add(new TimeSlotResponse(cur, slotEnd, available));
-            cur = slotEnd;
+        if (schedules == null || schedules.isEmpty()) {
+            return result;
         }
+
+        int slotStep = schedules.stream()
+                .map(BarberSchedule::getSlotDuration)
+                .filter(Objects::nonNull)
+                .mapToInt(Short::intValue)
+                .min()
+                .orElse(30);
+
+        int realDuration = durationMin != null && durationMin > 0
+                ? durationMin
+                : slotStep;
+
+        LocalTime dayStart = schedules.stream()
+                .map(BarberSchedule::getStartTime)
+                .filter(Objects::nonNull)
+                .min(LocalTime::compareTo)
+                .orElse(LocalTime.of(9, 0));
+
+        LocalTime dayEnd = schedules.stream()
+                .map(BarberSchedule::getEndTime)
+                .filter(Objects::nonNull)
+                .max(LocalTime::compareTo)
+                .orElse(LocalTime.of(18, 0));
+
+        LocalTime current = dayStart;
+
+        while (!current.plusMinutes(realDuration).isAfter(dayEnd)) {
+            LocalTime slotStart = current;
+            LocalTime slotEnd = slotStart.plusMinutes(realDuration);
+
+            boolean pastSlot = isPastSlot(date, slotStart);
+
+            boolean available = !pastSlot && isSlotAvailable(
+                    slotStart,
+                    slotEnd,
+                    schedules,
+                    booked,
+                    blocks
+            );
+
+            result.add(new TimeSlotResponse(slotStart, slotEnd, available));
+
+            current = current.plusMinutes(slotStep);
+        }
+
         return result;
     }
 
     private boolean isSlotAvailable(
-            LocalTime slotStart, LocalTime slotEnd,
+            LocalTime slotStart,
+            LocalTime slotEnd,
             List<BarberSchedule> schedules,
             List<Appointment> booked,
-            List<BarberBlockedTime> blocks) {
-
+            List<BarberBlockedTime> blocks
+    ) {
         for (BarberSchedule schedule : schedules) {
             UUID barberId = schedule.getUser().getId();
 
-            if (slotStart.isBefore(schedule.getStartTime()) ||
-                    slotEnd.isAfter(schedule.getEndTime())) continue;
+            boolean fitsSchedule =
+                    !slotStart.isBefore(schedule.getStartTime()) &&
+                            !slotEnd.isAfter(schedule.getEndTime());
+
+            if (!fitsSchedule) {
+                continue;
+            }
 
             boolean blocked = blocks.stream()
-                    .filter(b -> b.getUser().getId().equals(barberId))
-                    .anyMatch(b -> b.getStartTime() == null ||
-                            (b.getStartTime().isBefore(slotEnd) &&
-                                    b.getEndTime().isAfter(slotStart)));
-            if (blocked) continue;
+                    .filter(block -> block.getUser().getId().equals(barberId))
+                    .anyMatch(block -> isBlockedDuring(block, slotStart, slotEnd));
+
+            if (blocked) {
+                continue;
+            }
 
             boolean occupied = booked.stream()
-                    .filter(a -> a.getAssignedTo() != null &&
-                            a.getAssignedTo().getId().equals(barberId))
-                    .anyMatch(a -> a.getStartTime().isBefore(slotEnd) &&
-                            a.getEndTime().isAfter(slotStart));
-            if (occupied) continue;
+                    .filter(appointment -> appointment.getAssignedTo() != null)
+                    .filter(appointment -> appointment.getAssignedTo().getId().equals(barberId))
+                    .anyMatch(appointment ->
+                            appointment.getStartTime().isBefore(slotEnd) &&
+                                    appointment.getEndTime().isAfter(slotStart)
+                    );
+
+            if (occupied) {
+                continue;
+            }
 
             return true;
         }
+
         return false;
     }
 
@@ -123,35 +193,74 @@ public class AppointmentService {
         Barbershop shop = barbershopRepository.findById(barbershopId)
                 .orElseThrow(() -> new RuntimeException("Barbería no encontrada"));
 
-        if (req.appointmentDate().isBefore(LocalDate.now()))
-            throw new RuntimeException("No puedes agendar citas en fechas pasadas");
+        validateNotPastAppointment(req.appointmentDate(), req.startTime());
 
         short dayOfWeek = (short) req.appointmentDate().getDayOfWeek().getValue();
+
         List<BarberSchedule> schedules = scheduleRepository
                 .findAllByBarbershopIdAndDayOfWeekAndIsActiveTrue(barbershopId, dayOfWeek);
 
-        if (schedules.isEmpty())
+        if (schedules.isEmpty()) {
             throw new RuntimeException("La barbería no trabaja ese día");
+        }
 
-        BarberSchedule schedule = schedules.get(0);
+        BarberSchedule defaultSchedule = schedules.get(0);
 
-        // Duración: usa el servicio si viene, si no el slot por defecto
-        int duration = req.serviceDurationMin() != null
+        int duration = req.serviceDurationMin() != null && req.serviceDurationMin() > 0
                 ? req.serviceDurationMin()
-                : schedule.getSlotDuration();
+                : defaultSchedule.getSlotDuration();
 
-        // ✅ endTime: NO viene en el request, siempre se calcula
         LocalTime endTime = req.startTime().plusMinutes(duration);
 
-        if (req.startTime().isBefore(schedule.getStartTime()) ||
-                endTime.isAfter(schedule.getEndTime()))
-            throw new RuntimeException("Horario fuera del rango de trabajo");
+        User assignedBarber;
 
-        User assignedBarber = findAvailableBarber(
-                schedules, barbershopId, req.appointmentDate(), req.startTime(), endTime);
+        if (req.assignedToId() != null) {
+            assignedBarber = userRepository.findById(req.assignedToId())
+                    .orElseThrow(() -> new RuntimeException("Barbero no encontrado"));
 
-        if (assignedBarber == null)
-            throw new RuntimeException("No hay barberos disponibles en ese horario");
+            if (!assignedBarber.getBarbershop().getId().equals(barbershopId)) {
+                throw new RuntimeException("El barbero no pertenece a esta barbería");
+            }
+
+            BarberSchedule barberSchedule = schedules.stream()
+                    .filter(schedule -> schedule.getUser().getId().equals(req.assignedToId()))
+                    .findFirst()
+                    .orElseThrow(() -> new RuntimeException("El barbero seleccionado no trabaja ese día"));
+
+            validateSlotInsideSchedule(req.startTime(), endTime, barberSchedule);
+
+            boolean blocked = blockedTimeRepository
+                    .findByBarbershopAndDate(barbershopId, req.appointmentDate())
+                    .stream()
+                    .filter(block -> block.getUser().getId().equals(req.assignedToId()))
+                    .anyMatch(block -> isBlockedDuring(block, req.startTime(), endTime));
+
+            if (blocked) {
+                throw new RuntimeException("El barbero seleccionado tiene bloqueado ese horario");
+            }
+
+            if (appointmentRepository.existsConflict(
+                    req.assignedToId(),
+                    req.appointmentDate(),
+                    req.startTime(),
+                    endTime
+            )) {
+                throw new RuntimeException("El barbero seleccionado ya tiene una cita en ese horario");
+            }
+
+        } else {
+            assignedBarber = findAvailableBarber(
+                    schedules,
+                    barbershopId,
+                    req.appointmentDate(),
+                    req.startTime(),
+                    endTime
+            );
+
+            if (assignedBarber == null) {
+                throw new RuntimeException("No hay barberos disponibles en ese horario");
+            }
+        }
 
         Client client = req.clientId() != null
                 ? clientRepository.findById(req.clientId()).orElse(null)
@@ -161,7 +270,7 @@ public class AppointmentService {
                 ? catalogRepository.findById(req.haircutCatalogId()).orElse(null)
                 : null;
 
-        Appointment appt = Appointment.builder()
+        Appointment appointment = Appointment.builder()
                 .barbershop(shop)
                 .client(client)
                 .clientName(req.clientName())
@@ -180,34 +289,50 @@ public class AppointmentService {
                 .endTime(endTime)
                 .status(Appointment.AppointmentStatus.confirmed)
                 .source(Appointment.AppointmentSource.valueOf(
-                        req.source() != null ? req.source() : "web"))
+                        req.source() != null ? req.source() : "web"
+                ))
                 .reminderSent(false)
                 .build();
 
-        return toResponse(appointmentRepository.save(appt));
+        return toResponse(appointmentRepository.save(appointment));
     }
 
     private User findAvailableBarber(
-            List<BarberSchedule> schedules, UUID barbershopId,
-            LocalDate date, LocalTime start, LocalTime end) {
-
+            List<BarberSchedule> schedules,
+            UUID barbershopId,
+            LocalDate date,
+            LocalTime start,
+            LocalTime end
+    ) {
         List<BarberBlockedTime> blocks = blockedTimeRepository
                 .findByBarbershopAndDate(barbershopId, date);
 
         for (BarberSchedule schedule : schedules) {
             UUID barberId = schedule.getUser().getId();
 
-            boolean blocked = blocks.stream()
-                    .filter(b -> b.getUser().getId().equals(barberId))
-                    .anyMatch(b -> b.getStartTime() == null ||
-                            (b.getStartTime().isBefore(end) &&
-                                    b.getEndTime().isAfter(start)));
-            if (blocked) continue;
+            boolean fitsSchedule =
+                    !start.isBefore(schedule.getStartTime()) &&
+                            !end.isAfter(schedule.getEndTime());
 
-            if (appointmentRepository.existsConflict(barberId, date, start, end)) continue;
+            if (!fitsSchedule) {
+                continue;
+            }
+
+            boolean blocked = blocks.stream()
+                    .filter(block -> block.getUser().getId().equals(barberId))
+                    .anyMatch(block -> isBlockedDuring(block, start, end));
+
+            if (blocked) {
+                continue;
+            }
+
+            if (appointmentRepository.existsConflict(barberId, date, start, end)) {
+                continue;
+            }
 
             return schedule.getUser();
         }
+
         return null;
     }
 
@@ -219,113 +344,143 @@ public class AppointmentService {
     public List<AppointmentResponse> findByDate(LocalDate date) {
         return appointmentRepository
                 .findAllByBarbershopIdAndAppointmentDateOrderByStartTimeAsc(TenantContext.get(), date)
-                .stream().map(this::toResponse).toList();
+                .stream()
+                .map(this::toResponse)
+                .toList();
     }
 
     @Transactional(readOnly = true)
     public List<AppointmentResponse> findPending() {
         return appointmentRepository
                 .findAllByBarbershopIdAndStatusOrderByAppointmentDateAscStartTimeAsc(
-                        TenantContext.get(), "pending")
-                .stream().map(this::toResponse).toList();
+                        TenantContext.get(),
+                        "pending"
+                )
+                .stream()
+                .map(this::toResponse)
+                .toList();
     }
 
     @Transactional(readOnly = true)
     public List<AppointmentResponse> findMyAgenda(LocalDate date) {
         String email = org.springframework.security.core.context.SecurityContextHolder
-                .getContext().getAuthentication().getName();
-        User user = userRepository.findAll().stream()
-                .filter(u -> u.getEmail().equalsIgnoreCase(email))
+                .getContext()
+                .getAuthentication()
+                .getName();
+
+        User user = userRepository.findAll()
+                .stream()
+                .filter(currentUser -> currentUser.getEmail().equalsIgnoreCase(email))
                 .findFirst()
                 .orElseThrow(() -> new RuntimeException("Usuario no encontrado"));
 
         return appointmentRepository
                 .findAllByAssignedToIdAndAppointmentDateOrderByStartTimeAsc(user.getId(), date)
-                .stream().map(this::toResponse).toList();
+                .stream()
+                .map(this::toResponse)
+                .toList();
     }
 
     @Transactional(readOnly = true)
     public List<AppointmentResponse> findByClient(UUID clientId) {
         return appointmentRepository
                 .findAllByBarbershopIdAndClientIdOrderByAppointmentDateDescStartTimeDesc(
-                        TenantContext.get(), clientId)
-                .stream().map(this::toResponse).toList();
+                        TenantContext.get(),
+                        clientId
+                )
+                .stream()
+                .map(this::toResponse)
+                .toList();
     }
 
     @Transactional
     public AppointmentResponse assignBarber(UUID appointmentId, AssignBarberRequest req) {
-        Appointment appt = findOwned(appointmentId);
+        Appointment appointment = findOwned(appointmentId);
 
         User barber = userRepository.findById(req.barberId())
                 .orElseThrow(() -> new RuntimeException("Barbero no encontrado"));
 
-        if (appointmentRepository.existsConflict(
-                req.barberId(), appt.getAppointmentDate(),
-                appt.getStartTime(), appt.getEndTime()))
-            throw new RuntimeException("El barbero ya tiene una cita en ese horario");
+        if (!barber.getBarbershop().getId().equals(TenantContext.get())) {
+            throw new RuntimeException("El barbero no pertenece a esta barbería");
+        }
 
-        appt.setAssignedTo(barber);
-        appt.setStatus(Appointment.AppointmentStatus.confirmed);
-        return toResponse(appointmentRepository.save(appt));
+        if (appointmentRepository.existsConflict(
+                req.barberId(),
+                appointment.getAppointmentDate(),
+                appointment.getStartTime(),
+                appointment.getEndTime()
+        )) {
+            throw new RuntimeException("El barbero ya tiene una cita en ese horario");
+        }
+
+        appointment.setAssignedTo(barber);
+        appointment.setStatus(Appointment.AppointmentStatus.confirmed);
+
+        return toResponse(appointmentRepository.save(appointment));
     }
 
-    // ── Cambiar estado — genera venta al completar ────────────
     @Transactional
     public AppointmentResponse updateStatus(UUID appointmentId, String newStatus) {
-        Appointment appt = findOwned(appointmentId);
+        Appointment appointment = findOwned(appointmentId);
 
-        List<String> valid = List.of(
-                "confirmed", "in_progress", "completed", "cancelled", "no_show");
-        if (!valid.contains(newStatus))
+        List<String> validStatuses = List.of(
+                "confirmed",
+                "in_progress",
+                "completed",
+                "cancelled",
+                "no_show"
+        );
+
+        if (!validStatuses.contains(newStatus)) {
             throw new RuntimeException("Estado inválido: " + newStatus);
+        }
 
-        appt.setStatus(Appointment.AppointmentStatus.valueOf(newStatus));
+        appointment.setStatus(Appointment.AppointmentStatus.valueOf(newStatus));
 
-        // ✅ appt.getSale() porque en la entidad es: private Sale sale (relación)
-        if ("completed".equals(newStatus) && appt.getSale() == null) {
-            Sale sale = createSaleFromAppointment(appt);
+        if ("completed".equals(newStatus) && appointment.getSale() == null) {
+            Sale sale = createSaleFromAppointment(appointment);
+
             if (sale != null) {
-                appt.setSale(sale);  // ✅ setea la relación, no un UUID
+                appointment.setSale(sale);
             }
         }
 
-        return toResponse(appointmentRepository.save(appt));
+        return toResponse(appointmentRepository.save(appointment));
     }
 
-    // ── Crear Sale con cascade ────────────────────────────────
-    private Sale createSaleFromAppointment(Appointment appt) {
-        BigDecimal price = appt.getServicePrice();
-        if (price == null || price.compareTo(BigDecimal.ZERO) <= 0) return null;
+    private Sale createSaleFromAppointment(Appointment appointment) {
+        BigDecimal price = appointment.getServicePrice();
 
-        String itemName = appt.getServiceName() != null
-                ? appt.getServiceName()
+        if (price == null || price.compareTo(BigDecimal.ZERO) <= 0) {
+            return null;
+        }
+
+        String itemName = appointment.getServiceName() != null
+                ? appointment.getServiceName()
                 : "Servicio de barbería";
 
-        // ✅ Sale usa: attendedByUser (User), no barberId (UUID)
-        // ✅ Sale requiere: subtotal, discount, total (según tu entidad)
         SaleItem item = SaleItem.builder()
                 .itemType("service")
-                .itemRefId(appt.getServiceCategoryId())
+                .itemRefId(appointment.getServiceCategoryId())
                 .itemName(itemName)
                 .quantity(1)
                 .unitPrice(price)
-                .total(price)          // ✅ SaleItem tiene "total", no "subtotal"
+                .total(price)
                 .build();
 
         Sale sale = Sale.builder()
-                .barbershop(appt.getBarbershop())
-                .client(appt.getClient())
-                .attendedByUser(appt.getAssignedTo())   // ✅ relación User, no UUID
+                .barbershop(appointment.getBarbershop())
+                .client(appointment.getClient())
+                .attendedByUser(appointment.getAssignedTo())
                 .paymentMethod("cash")
                 .status("completed")
                 .notes("Auto-generada al completar cita")
-                .subtotal(price)       // ✅ Sale requiere subtotal
-                .discount(BigDecimal.ZERO)  // ✅ Sale requiere discount
+                .subtotal(price)
+                .discount(BigDecimal.ZERO)
                 .total(price)
                 .items(new ArrayList<>(List.of(item)))
                 .build();
 
-        // Relación bidireccional: cada item conoce su sale
         item.setSale(sale);
 
         return saleRepository.save(sale);
@@ -378,23 +533,29 @@ public class AppointmentService {
     public List<BarberScheduleResponse> getSchedules(UUID userId) {
         return scheduleRepository
                 .findAllByUserIdOrderByDayOfWeekAsc(userId)
-                .stream().map(this::toScheduleResponse).toList();
+                .stream()
+                .map(this::toScheduleResponse)
+                .toList();
     }
 
     @Transactional
     public void addBlockedTime(UUID userId, BlockedTimeRequest req) {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new RuntimeException("Usuario no encontrado"));
-        Barbershop shop = barbershopRepository.findById(TenantContext.get()).orElseThrow();
 
-        blockedTimeRepository.save(BarberBlockedTime.builder()
-                .user(user)
-                .barbershop(shop)
-                .blockedDate(req.blockedDate())
-                .startTime(req.startTime())
-                .endTime(req.endTime())
-                .reason(req.reason())
-                .build());
+        Barbershop shop = barbershopRepository.findById(TenantContext.get())
+                .orElseThrow();
+
+        blockedTimeRepository.save(
+                BarberBlockedTime.builder()
+                        .user(user)
+                        .barbershop(shop)
+                        .blockedDate(req.blockedDate())
+                        .startTime(req.startTime())
+                        .endTime(req.endTime())
+                        .reason(req.reason())
+                        .build()
+        );
     }
 
     // ══════════════════════════════════════════════════════════
@@ -402,53 +563,111 @@ public class AppointmentService {
     // ══════════════════════════════════════════════════════════
 
     private Appointment findOwned(UUID id) {
-        Appointment appt = appointmentRepository.findById(id)
+        Appointment appointment = appointmentRepository.findById(id)
                 .orElseThrow(() -> new RuntimeException("Cita no encontrada"));
-        if (!appt.getBarbershop().getId().equals(TenantContext.get()))
+
+        if (!appointment.getBarbershop().getId().equals(TenantContext.get())) {
             throw new RuntimeException("Acceso denegado");
-        return appt;
+        }
+
+        return appointment;
     }
 
-    private AppointmentResponse toResponse(Appointment a) {
+    private AppointmentResponse toResponse(Appointment appointment) {
         return new AppointmentResponse(
-                a.getId(),
-                a.getClientName(),
-                a.getClientPhone(),
-                a.getClientNotes(),
-                a.getClient() != null ? a.getClient().getId() : null,
-                a.getAssignedTo() != null ? a.getAssignedTo().getFullName() : null,
-                a.getAssignedTo() != null ? a.getAssignedTo().getId() : null,
-                a.getHaircutCatalog() != null ? a.getHaircutCatalog().getName() : null,
-                a.getServiceNotes(),
-                a.getServiceCategoryId(),
-                a.getServiceVariantId(),
-                a.getServiceName(),
-                a.getServicePrice(),
-                a.getServiceDurationMin(),
-                a.getSale() != null ? a.getSale().getId() : null,
-                a.getAppointmentDate(),
-                a.getStartTime(),
-                a.getEndTime(),
-                a.getStatus().name(),
-                a.getSource().name(),
-                a.getReminderSent(),
-                a.getCreatedAt()
+                appointment.getId(),
+                appointment.getClientName(),
+                appointment.getClientPhone(),
+                appointment.getClientNotes(),
+                appointment.getClient() != null ? appointment.getClient().getId() : null,
+                appointment.getAssignedTo() != null ? appointment.getAssignedTo().getFullName() : null,
+                appointment.getAssignedTo() != null ? appointment.getAssignedTo().getId() : null,
+                appointment.getHaircutCatalog() != null ? appointment.getHaircutCatalog().getName() : null,
+                appointment.getServiceNotes(),
+                appointment.getServiceCategoryId(),
+                appointment.getServiceVariantId(),
+                appointment.getServiceName(),
+                appointment.getServicePrice(),
+                appointment.getServiceDurationMin(),
+                appointment.getSale() != null ? appointment.getSale().getId() : null,
+                appointment.getAppointmentDate(),
+                appointment.getStartTime(),
+                appointment.getEndTime(),
+                appointment.getStatus().name(),
+                appointment.getSource().name(),
+                appointment.getReminderSent(),
+                appointment.getCreatedAt()
         );
     }
 
     private static final String[] DAY_NAMES = {
-            "", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"
+            "",
+            "Lunes",
+            "Martes",
+            "Miércoles",
+            "Jueves",
+            "Viernes",
+            "Sábado",
+            "Domingo"
     };
 
-    private BarberScheduleResponse toScheduleResponse(BarberSchedule s) {
+    private BarberScheduleResponse toScheduleResponse(BarberSchedule schedule) {
         return new BarberScheduleResponse(
-                s.getId(),
-                s.getDayOfWeek(),
-                DAY_NAMES[s.getDayOfWeek()],
-                s.getStartTime(),
-                s.getEndTime(),
-                s.getSlotDuration(),
-                s.getIsActive()
+                schedule.getId(),
+                schedule.getDayOfWeek(),
+                DAY_NAMES[schedule.getDayOfWeek()],
+                schedule.getStartTime(),
+                schedule.getEndTime(),
+                schedule.getSlotDuration(),
+                schedule.getIsActive()
         );
+    }
+
+    private void validateSlotInsideSchedule(
+            LocalTime start,
+            LocalTime end,
+            BarberSchedule schedule
+    ) {
+        if (start.isBefore(schedule.getStartTime()) || end.isAfter(schedule.getEndTime())) {
+            throw new RuntimeException("Horario fuera del rango de trabajo");
+        }
+    }
+
+    private void validateNotPastAppointment(LocalDate appointmentDate, LocalTime startTime) {
+        if (isPastSlot(appointmentDate, startTime)) {
+            throw new RuntimeException("No puedes reservar un horario vencido.");
+        }
+    }
+
+    private boolean isPastSlot(LocalDate appointmentDate, LocalTime startTime) {
+        ZonedDateTime now = ZonedDateTime.now(BARBERSHOP_ZONE);
+
+        LocalDate today = now.toLocalDate();
+        LocalTime currentTime = now.toLocalTime()
+                .withSecond(0)
+                .withNano(0);
+
+        if (appointmentDate.isBefore(today)) {
+            return true;
+        }
+
+        if (appointmentDate.isAfter(today)) {
+            return false;
+        }
+
+        return !startTime.isAfter(currentTime);
+    }
+
+    private boolean isBlockedDuring(
+            BarberBlockedTime block,
+            LocalTime start,
+            LocalTime end
+    ) {
+        if (block.getStartTime() == null || block.getEndTime() == null) {
+            return true;
+        }
+
+        return block.getStartTime().isBefore(end) &&
+                block.getEndTime().isAfter(start);
     }
 }
