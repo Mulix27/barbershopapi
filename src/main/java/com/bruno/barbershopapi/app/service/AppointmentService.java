@@ -262,9 +262,7 @@ public class AppointmentService {
             }
         }
 
-        Client client = req.clientId() != null
-                ? clientRepository.findById(req.clientId()).orElse(null)
-                : null;
+        Client client = resolveClientForAppointment(shop, req);
 
         HaircutCatalog catalog = req.haircutCatalogId() != null
                 ? catalogRepository.findById(req.haircutCatalogId()).orElse(null)
@@ -273,8 +271,8 @@ public class AppointmentService {
         Appointment appointment = Appointment.builder()
                 .barbershop(shop)
                 .client(client)
-                .clientName(req.clientName())
-                .clientPhone(req.clientPhone())
+                .clientName(client != null ? client.getFullName() : req.clientName())
+                .clientPhone(client != null ? client.getPhone() : req.clientPhone())
                 .clientNotes(req.clientNotes())
                 .assignedTo(assignedBarber)
                 .haircutCatalog(catalog)
@@ -600,6 +598,51 @@ public class AppointmentService {
         );
     }
 
+    private Client resolveClientForAppointment(Barbershop shop, AppointmentRequest req) {
+        if (req.clientId() != null) {
+            Client client = clientRepository.findById(req.clientId())
+                    .orElseThrow(() -> new RuntimeException("Cliente no encontrado"));
+
+            if (!client.getBarbershop().getId().equals(shop.getId())) {
+                throw new RuntimeException("El cliente no pertenece a esta barbería");
+            }
+
+            return client;
+        }
+
+        String phoneLast10 = getLast10Digits(req.clientPhone());
+
+        if (phoneLast10.length() == 10) {
+            Optional<Client> existingClient = clientRepository.findByBarbershopIdAndPhoneLast10(
+                    shop.getId(),
+                    phoneLast10
+            );
+
+            if (existingClient.isPresent()) {
+                Client client = existingClient.get();
+
+                if ((client.getFullName() == null || client.getFullName().isBlank())
+                        && req.clientName() != null
+                        && !req.clientName().isBlank()) {
+                    client.setFullName(req.clientName().trim());
+                    clientRepository.save(client);
+                }
+
+                return client;
+            }
+        }
+
+        Client newClient = Client.builder()
+                .barbershop(shop)
+                .fullName(req.clientName() != null ? req.clientName().trim() : "Cliente")
+                .phone(normalizeMexicanPhone(req.clientPhone()))
+                .notes(req.clientNotes())
+                .isActive(true)
+                .build();
+
+        return clientRepository.save(newClient);
+    }
+
     private static final String[] DAY_NAMES = {
             "",
             "Lunes",
@@ -669,5 +712,29 @@ public class AppointmentService {
 
         return block.getStartTime().isBefore(end) &&
                 block.getEndTime().isAfter(start);
+    }
+
+    private String getLast10Digits(String phone) {
+        if (phone == null) {
+            return "";
+        }
+
+        String digits = phone.replaceAll("\\D", "");
+
+        if (digits.length() <= 10) {
+            return digits;
+        }
+
+        return digits.substring(digits.length() - 10);
+    }
+
+    private String normalizeMexicanPhone(String phone) {
+        String last10 = getLast10Digits(phone);
+
+        if (last10.length() != 10) {
+            return phone;
+        }
+
+        return "52" + last10;
     }
 }
